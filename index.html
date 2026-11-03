@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#101820">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Livraison">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Livraison</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17212b;background:#f3f5f7}
+*{box-sizing:border-box}
+body{margin:0;padding:calc(env(safe-area-inset-top) + 8px) 14px calc(env(safe-area-inset-bottom) + 24px);max-width:650px;margin-inline:auto}
+h1{margin:6px 2px 10px;font-size:24px}
+h2{font-size:17px;margin:0 0 10px}
+.card{background:#fff;border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 2px 12px #1323330c}
+.muted{color:#647384;font-size:13px;line-height:1.4}
+label{display:block;font-size:13px;font-weight:650;margin:10px 0 5px}
+input{font:inherit;width:100%;border:1px solid #d7dee5;border-radius:11px;padding:13px;background:#fff;color:#17212b}
+button,.btn{border:0;border-radius:14px;padding:14px 15px;font:650 16px -apple-system,BlinkMacSystemFont,sans-serif;background:#142b3b;color:#fff;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;min-height:52px;cursor:pointer;width:100%}
+button.secondary,.btn.secondary{background:#eaf0f4;color:#1b3445}
+button.green{background:#147d55}
+button.danger{background:#fbeaea;color:#a32626}
+button.big{min-height:64px;font-size:19px}
+button:disabled{opacity:.45}
+.row{display:flex;gap:8px;margin-top:10px}.row>*{flex:1}
+.stop{border:1px solid #e0e6eb;border-radius:13px;padding:12px;margin:9px 0}
+.stop.done{opacity:.5}
+.stop.arrived{border-color:#147d55}
+.num{background:#e8f0f4;border-radius:20px;padding:4px 10px;font-weight:750;margin-right:6px}
+.stop p{margin:5px 0;font-size:14px}
+.small-actions{display:flex;gap:6px;margin-top:8px}
+.small-actions button{min-height:42px;font-size:14px;padding:8px}
+.warn{color:#a35a00;font-size:13px;margin:5px 0}
+#status{padding:10px 12px;border-radius:10px;background:#eef3f6;font-size:13px;margin-top:10px;white-space:pre-wrap}
+#current .name{font-size:22px;font-weight:750}
+#current .addr{font-size:17px;margin:6px 0}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<h1>🛵 Livraison</h1>
+
+<section class="card" id="current-card">
+  <h2>Prochain client</h2>
+  <div id="current" class="muted">Aucune tournée en cours.</div>
+</section>
+
+<section class="card">
+  <h2>1 · Ajouter une commande</h2>
+  <label for="ticket">Photo du ticket (appareil photo ou galerie)</label>
+  <input id="ticket" type="file" accept="image/*">
+  <div id="ocrPreview" class="muted"></div>
+  <label for="customer">Nom (facultatif)</label>
+  <input id="customer" autocomplete="off">
+  <label for="address">Adresse</label>
+  <input id="address" autocomplete="off" placeholder="N°, rue, code postal">
+  <label for="phone">Téléphone</label>
+  <input id="phone" type="tel" inputmode="tel" autocomplete="off">
+  <div class="row"><button id="add">Ajouter</button></div>
+  <div id="status" role="status">Prêt.</div>
+</section>
+
+<section class="card">
+  <h2>2 · Tournée (<span id="count">0</span>)</h2>
+  <div id="stops"></div>
+  <div class="row"><button id="optimize" class="green">Calculer le meilleur ordre</button></div>
+  <div id="routeSummary" class="muted" style="margin-top:8px"></div>
+  <div class="row"><button id="maps" class="secondary hidden">Itinéraire complet Google Maps</button></div>
+  <div class="row"><button id="finish" class="danger hidden">Terminer et effacer la tournée</button></div>
+</section>
+
+<section class="card">
+  <h2>Réglages</h2>
+  <label for="base">Adresse du magasin (départ et retour)</label>
+  <input id="base" autocomplete="off">
+  <div class="row"><button id="saveBase" class="secondary">Enregistrer</button></div>
+  <p class="tiny muted" style="margin-top:12px">Les numéros restent dans la mémoire de ton iPhone. Seules les adresses sont envoyées aux services de cartes (adresse.data.gouv.fr et OSRM), jamais les numéros ni les photos.</p>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+const DEFAULT_BASE="1 boulevard de la Blancarde, 13004 Marseille";
+const $=id=>document.getElementById(id);
+let S={orders:[],base:DEFAULT_BASE,optimized:false};
+try{const s=JSON.parse(localStorage.getItem("livraison_state")||"null");if(s&&Array.isArray(s.orders))S=Object.assign(S,s)}catch(e){}
+let baseCoord=null;
+
+function save(){try{localStorage.setItem("livraison_state",JSON.stringify(S))}catch(e){}render()}
+function say(t){$("status").textContent=t}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function telHref(p){return "tel:"+String(p).replace(/[^\d+]/g,"")}
+function currentIdx(){return S.orders.findIndex(o=>o.status!=="done")}
+
+function render(){
+  $("count").textContent=S.orders.length;
+  $("base").value=S.base;
+  $("stops").innerHTML=S.orders.length?S.orders.map((o,i)=>`
+    <div class="stop ${o.status}" data-id="${o.id}">
+      <div><span class="num">${i+1}</span><b>${esc(o.name||"Client")}</b>${o.status==="done"?" ✅":o.status==="arrived"?" 📍":""}</div>
+      <p>${esc(o.address)}</p>
+      ${o.label?`<p class="muted">Trouvé : ${esc(o.label)}</p>`:""}
+      ${o.warn?`<p class="warn">⚠ ${esc(o.warn)}</p>`:""}
+      <p>☎ ${esc(o.phone)}</p>
+      ${o.status!=="done"?`<div class="small-actions"><button class="secondary" data-act="up">↑</button><button class="secondary" data-act="down">↓</button><button class="danger" data-act="del">Retirer</button></div>`:""}
+    </div>`).join(""):'<p class="muted">Aucune commande pour le moment.</p>';
+  const hasOrders=S.orders.length>0;
+  $("maps").classList.toggle("hidden",!hasOrders);
+  $("finish").classList.toggle("hidden",!hasOrders);
+  renderCurrent();
+}
+
+function renderCurrent(){
+  const i=currentIdx(),box=$("current");
+  if(!S.orders.length){box.className="muted";box.textContent="Aucune tournée en cours.";return}
+  if(i<0){
+    box.className="";
+    box.innerHTML=`<p class="name">Tournée terminée 🎉</p><p class="muted">Retour au magasin.</p>
+      <div class="row"><a class="btn green big" href="${mapsBack()}" target="_blank" rel="noopener">Retour au magasin</a></div>`;
+    return;
+  }
+  const o=S.orders[i];box.className="";
+  box.innerHTML=`<p class="name">${esc(o.name||"Client")} <span class="muted">(${i+1}/${S.orders.length})</span></p>
+    <p class="addr">${esc(o.address)}</p>
+    <div class="row"><a class="btn big green" href="${telHref(o.phone)}">📞 Appeler</a></div>
+    <div class="row"><a class="btn big secondary" href="${mapsOne(o)}" target="_blank" rel="noopener">🧭 Y aller</a></div>
+    <div class="row"><button class="big secondary" data-cur="arrived" ${o.status==="arrived"?"disabled":""}>Arrivé</button><button class="big green" data-cur="done">Livré ✔</button></div>`;
+}
+
+/* Liens Google Maps */
+function dest(o){return (o.lat!=null&&o.lon!=null)?o.lat+","+o.lon:o.address}
+function avoid(){return "&travelmode=driving&avoid=tolls%7Chighways%7Cferries"}
+function mapsOne(o){return "https://www.google.com/maps/dir/?api=1&destination="+encodeURIComponent(dest(o))+avoid()}
+function mapsBack(){return "https://www.google.com/maps/dir/?api=1&destination="+encodeURIComponent(baseCoord?baseCoord.join(","):S.base)+avoid()}
+
+/* Clics */
+$("stops").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-act]");if(!b)return;
+  const id=b.closest(".stop").dataset.id,i=S.orders.findIndex(o=>String(o.id)===id);if(i<0)return;
+  if(b.dataset.act==="del"){if(!confirm("Retirer ce client ?"))return;S.orders.splice(i,1)}
+  else{const j=i+(b.dataset.act==="up"?-1:1);if(j<0||j>=S.orders.length)return;[S.orders[i],S.orders[j]]=[S.orders[j],S.orders[i]]}
+  save();
+});
+$("current").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-cur]");if(!b)return;
+  const i=currentIdx();if(i<0)return;
+  S.orders[i].status=b.dataset.cur;save();
+  if(b.dataset.cur==="done"&&currentIdx()<0)say("Tournée terminée : retour au magasin.");
+});
+$("finish").onclick=()=>{if(confirm("Effacer toute la tournée et les numéros des clients ?")){S.orders=[];S.optimized=false;$("routeSummary").textContent="";save();say("Tournée effacée.")}};
+$("saveBase").onclick=()=>{const v=$("base").value.trim();if(!v)return;S.base=v;baseCoord=null;save();say("Adresse du magasin enregistrée.")};
+
+/* Ajout */
+$("add").onclick=async()=>{
+  const address=$("address").value.trim(),phone=$("phone").value.trim();
+  if(!address||!phone){say("Il faut au minimum une adresse et un numéro de téléphone.");return}
+  const o={id:Date.now()+"_"+Math.floor(Math.random()*1000),name:$("customer").value.trim(),address,phone,status:"pending"};
+  S.orders.push(o);S.optimized=false;
+  $("customer").value=$("address").value=$("phone").value="";$("ocrPreview").textContent="";$("ticket").value="";
+  save();say("Ajouté. Ticket suivant, ou calcule l'ordre.");
+  try{await locate(o);save()}catch(e){}
+};
+
+/* Géocodage : API Adresse (data.gouv.fr), biaisée sur Marseille */
+async function geocode(addr){
+  const r=await fetch("https://api-adresse.data.gouv.fr/search/?limit=1&lat=43.296&lon=5.37&q="+encodeURIComponent(addr));
+  if(!r.ok)throw Error("Service d'adresses indisponible");
+  const j=await r.json();const f=j.features&&j.features[0];
+  if(!f)throw Error("Adresse introuvable : "+addr);
+  return {lon:f.geometry.coordinates[0],lat:f.geometry.coordinates[1],label:f.properties.label,score:f.properties.score,city:f.properties.city};
+}
+async function locate(o){
+  if(o.lat!=null)return;
+  const g=await geocode(o.address);
+  o.lat=g.lat;o.lon=g.lon;o.label=g.label;o.warn="";
+  if(g.score<0.6)o.warn="Adresse peu sûre, vérifie-la.";
+  if(g.city&&!/marseille/i.test(g.city))o.warn="Trouvée hors de Marseille ("+g.city+"), vérifie.";
+}
+
+/* Optimisation */
+function perms(a){if(a.length<=1)return[a];const out=[];a.forEach((v,i)=>perms(a.filter((_,j)=>j!==i)).forEach(p=>out.push([v,...p])));return out}
+function hav(a,b){const R=6371,t=x=>x*Math.PI/180,dl=t(b[0]-a[0]),dn=t(b[1]-a[1]);const h=Math.sin(dl/2)**2+Math.cos(t(a[0]))*Math.cos(t(b[0]))*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(h))*1000}
+
+$("optimize").onclick=async()=>{
+  const todo=S.orders.filter(o=>o.status!=="done"),done=S.orders.filter(o=>o.status==="done");
+  if(!todo.length){say("Rien à optimiser.");return}
+  if(todo.length>8){say("Maximum 8 commandes pour le calcul automatique.");return}
+  $("optimize").disabled=true;say("Recherche des adresses…");
+  try{
+    if(!baseCoord){const g=await geocode(S.base);baseCoord=[g.lat,g.lon]}
+    for(const o of todo){try{await locate(o)}catch(e){o.warn=e.message}}
+    const bad=todo.filter(o=>o.lat==null);
+    if(bad.length){save();say("Adresse introuvable pour "+bad.length+" client(s). Corrige-la (retire et ressaisis).");return}
+    const pts=[baseCoord,...todo.map(o=>[o.lat,o.lon])];
+    let M,mode;
+    try{
+      const url="https://router.project-osrm.org/table/v1/driving/"+pts.map(p=>p[1]+","+p[0]).join(";")+"?annotations=duration";
+      const ctl=new AbortController();const to=setTimeout(()=>ctl.abort(),8000);
+      const r=await fetch(url,{signal:ctl.signal});clearTimeout(to);
+      const j=await r.json();if(!j.durations)throw Error();
+      M=j.durations;mode="durée routière";
+    }catch(e){M=pts.map(a=>pts.map(b=>hav(a,b)));mode="distance à vol d'oiseau (service de trajets indisponible)"}
+    let best=null,bc=Infinity;
+    for(const p of perms(todo.map((_,i)=>i))){let c=0,prev=0;for(const k of p){c+=M[prev][k+1];prev=k+1}c+=M[prev][0];if(c<bc){bc=c;best=p}}
+    S.orders=[...done,...best.map(i=>todo[i])];S.optimized=true;
+    $("routeSummary").textContent="Ordre calculé sur la "+mode+", retour au magasin inclus."+(mode.startsWith("durée")?" Environ "+Math.round(bc/60)+" min (estimation voiture).":"");
+    save();say("Ordre calculé. Contrôle-le avant de partir.");
+  }catch(e){say("Erreur : "+e.message+" Tu peux réordonner avec ↑ ↓.")}
+  finally{$("optimize").disabled=false}
+};
+
+/* Google Maps multi-étapes pour les clients restants */
+$("maps").onclick=()=>{
+  const rest=S.orders.filter(o=>o.status!=="done");
+  if(!rest.length){window.open(mapsBack(),"_blank");return}
+  const hasDone=S.orders.some(o=>o.status==="done");
+  let url="https://www.google.com/maps/dir/?api=1";
+  if(!hasDone)url+="&origin="+encodeURIComponent(baseCoord?baseCoord.join(","):S.base);
+  url+="&destination="+encodeURIComponent(baseCoord?baseCoord.join(","):S.base);
+  url+="&waypoints="+rest.map(o=>encodeURIComponent(dest(o))).join("%7C")+avoid();
+  window.open(url,"_blank");
+};
+
+/* OCR */
+async function shrink(file){
+  try{
+    const bmp=await createImageBitmap(file);const m=1600,k=Math.min(1,m/Math.max(bmp.width,bmp.height));
+    const c=document.createElement("canvas");c.width=Math.round(bmp.width*k);c.height=Math.round(bmp.height*k);
+    c.getContext("2d").drawImage(bmp,0,0,c.width,c.height);return c;
+  }catch(e){return file}
+}
+const STREET=/\b(rue|bd|boulevard|bld|avenue|av|chemin|impasse|traverse|cours|place|all[ée]e|quai|mont[ée]e|rond[- ]point|cité|residence|résidence)\b/i;
+function parse(text){
+  const lines=text.split(/\n/).map(x=>x.trim()).filter(Boolean);
+  const phone=(text.match(/(?:\+33|0033|0)\s?[1-9](?:[\s.\-]?\d{2}){4}/)||[""])[0].trim();
+  let address="";
+  for(let i=0;i<lines.length;i++){
+    const l=lines[i],hasPC=/\b13\d{3}\b/.test(l),hasSt=STREET.test(l)&&/\d/.test(l);
+    if(hasSt||hasPC){
+      address=l;
+      if(hasSt&&!hasPC&&lines[i+1]&&/\b13\d{3}\b/.test(lines[i+1]))address+=", "+lines[i+1];
+      if(!hasSt&&hasPC&&lines[i-1]&&STREET.test(lines[i-1]))address=lines[i-1]+", "+l;
+      if(hasSt||hasPC)break;
+    }
+  }
+  return {phone,address};
+}
+$("ticket").addEventListener("change",async e=>{
+  const f=e.target.files[0];if(!f)return;
+  if(!window.Tesseract){say("Lecture automatique indisponible (pas de connexion ?). Saisis les champs à la main.");return}
+  try{
+    say("Lecture du ticket… (peut prendre 10 à 30 s la première fois)");
+    const img=await shrink(f);
+    const r=await Tesseract.recognize(img,"fra");
+    const t=r.data.text;$("ocrPreview").textContent="Texte lu : "+t.slice(0,600);
+    const p=parse(t);
+    if(p.phone)$("phone").value=p.phone;
+    if(p.address)$("address").value=p.address;
+    say("Lecture terminée. Vérifie l'adresse, le numéro, ajoute le nom si tu veux, puis « Ajouter ».");
+  }catch(err){say("Lecture impossible. Saisis les champs à la main.")}
+});
+
+if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+render();
+</script>
+</body>
+</html>
